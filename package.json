@@ -1,0 +1,9 @@
+{
+  "name": "stpho-line-webhook-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LINE Messaging API webhook relay for InfinityFree-hosted STPHO WorkLog",
+  "main": "server.js",
+  "scripts": {"start": "node server.js"},
+  "engines": {"node": ">=18"}
+}
