@@ -1,4 +1,3 @@
-
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -8,6 +7,10 @@ const PORT = Number(process.env.PORT || 10000);
 const CHANNEL_SECRET = String(process.env.LINE_CHANNEL_SECRET || '');
 const RELAY_KEY = String(process.env.RELAY_KEY || '');
 const STORE = process.env.STORE_FILE || path.join(__dirname, 'latest.json');
+const IMAGE_DIR = process.env.IMAGE_DIR || path.join('/tmp', 'stpho-line-images');
+try { fs.mkdirSync(IMAGE_DIR, {recursive:true}); } catch (_) {}
+function relayKeyHeader(req) { return String(req.headers['x-relay-key'] || ''); }
+function imageId() { return crypto.randomBytes(18).toString('hex'); }
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
@@ -43,6 +46,42 @@ const server = http.createServer((req, res) => {
     if (!validKey(url)) return json(res, 403, {ok:false, error:'invalid relay key'});
     const latest = readLatest();
     return json(res, 200, {ok:true, ...latest});
+  }
+
+
+  if (req.method === 'POST' && url.pathname === '/image-upload') {
+    if (RELAY_KEY && relayKeyHeader(req) !== RELAY_KEY) return json(res, 403, {ok:false, error:'invalid relay key'});
+    const mime = String(req.headers['content-type'] || 'image/jpeg').split(';')[0].toLowerCase();
+    if (!['image/jpeg','image/png'].includes(mime)) return json(res, 400, {ok:false, error:'only JPEG/PNG supported'});
+    const len = Number(req.headers['content-length'] || 0);
+    if (len > 10 * 1024 * 1024) return json(res, 413, {ok:false, error:'image too large'});
+    const id = imageId();
+    const ext = mime === 'image/png' ? 'png' : 'jpg';
+    const file = path.join(IMAGE_DIR, id + '.' + ext);
+    const out = fs.createWriteStream(file, {flags:'wx'});
+    let total = 0; let failed = false;
+    req.on('data', chunk => { total += chunk.length; if (total > 10*1024*1024) { failed=true; req.destroy(); try{fs.unlinkSync(file);}catch(_){} } });
+    req.on('error', () => { try{out.destroy();fs.unlinkSync(file);}catch(_){} });
+    out.on('error', () => { if (!failed) { try{fs.unlinkSync(file);}catch(_){} } });
+    out.on('finish', () => {
+      if (failed) return;
+      const proto = (req.headers['x-forwarded-proto'] || 'https').toString().split(',')[0].trim();
+      const host = req.headers['x-forwarded-host'] || req.headers.host;
+      return json(res, 200, {ok:true, url:`${proto}://${host}/line-image/${id}.${ext}`});
+    });
+    req.pipe(out);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname.startsWith('/line-image/')) {
+    const name = path.basename(url.pathname);
+    if (!/^[a-f0-9]{36}\.(jpg|png)$/.test(name)) return json(res, 404, {ok:false, error:'not found'});
+    const file = path.join(IMAGE_DIR, name);
+    if (!fs.existsSync(file)) return json(res, 404, {ok:false, error:'image expired'});
+    const stat = fs.statSync(file);
+    res.writeHead(200, {'content-type': name.endsWith('.png') ? 'image/png' : 'image/jpeg','content-length':stat.size,'cache-control':'public, max-age=86400','content-disposition':'inline'});
+    fs.createReadStream(file).pipe(res);
+    return;
   }
 
   if (req.method === 'POST' && url.pathname === '/webhook') {
